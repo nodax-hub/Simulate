@@ -115,28 +115,6 @@ def point_on_path(pts: list[Point], distance: float) -> Point:
     return Point(x_, y_)
 
 
-def curvature_radius(p_prev: Point, p: Point, p_next: Point) -> Optional[float]:
-    """
-    Приближённый радиус окружности через три точки.
-    Если точки почти на одной прямой — вернём None (бесконечный радиус).
-    """
-    (x1, y1), (x2, y2), (x3, y3) = p_prev, p, p_next
-    # Формулы через пересечение серединных перпендикуляров
-    a = x1 - x2
-    b = y1 - y2
-    c = x1 - x3
-    d = y1 - y3
-    e = ((x1 ** 2 - x2 ** 2) + (y1 ** 2 - y2 ** 2)) / 2.0
-    f = ((x1 ** 2 - x3 ** 2) + (y1 ** 2 - y3 ** 2)) / 2.0
-    det = a * d - b * c
-    if abs(det) < 1e-9:
-        return None
-    cx = (d * e - b * f) / det
-    cy = (-c * e + a * f) / det
-    r = math.hypot(cx - x1, cy - y1)
-    return r if r > 1e-6 else None
-
-
 @dataclass(frozen=True)
 class Polygon:
     vertices: list[Point]
@@ -262,21 +240,21 @@ class PumpController:
             return 0.0
         return x
     
-    def compute_flow_series(self, t, v_motion, L: float, V_total: float, eps=1e-9) -> PumpPlan:
+    def compute_flow_series(self, t, v_motion, length: float, volume_total: float, eps=1e-9) -> PumpPlan:
         """
         :param t: дискретные моменты времени
         :param v_motion: моментальная скорость в соответствующие моменты времени
-        :param L: Общая дистанция (путь)
-        :param V_total: Общий объём который необходимо вылить
+        :param length: Общая дистанция (путь)
+        :param volume_total: Общий объём который необходимо вылить
         :return:
         """
         assert len(t) == len(v_motion)
         
-        if L <= 0 or V_total <= 0:
+        if length <= 0 or volume_total <= 0:
             return PumpPlan(t=t, q=[0.0] * len(t), empty_events=[])
         
         # Сперва определим требуемую скорость насоса на всём маршруте
-        q_req = [V_total * max(vm, 0.0) / max(L, eps) for vm in v_motion]
+        q_req = [volume_total * max(vm, 0.0) / max(length, eps) for vm in v_motion]
         
         q = []
         for x in q_req:

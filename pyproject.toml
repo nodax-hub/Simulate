@@ -1,5 +1,5 @@
 [project]
-name = "simulate"
+name = "pj_simulate"
 version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.13"
