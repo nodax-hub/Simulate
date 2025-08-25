@@ -17,18 +17,25 @@
 # 2) (если есть, объём бака не позволит нам за раз вылить требуемый суммарный объём) определяем точки опустошения бака (согласно вычисленным v_pump(t))
 """
 
-import bisect
-import math
 from bisect import bisect_right
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Iterable, Optional, Protocol, Literal
+from typing import Optional, Protocol, NamedTuple, Literal
+from typing import Sequence
 
 import matplotlib.pyplot as plt
-from typing_extensions import NamedTuple
 
 
 # ---------------------------- Геометрия/утилиты ----------------------------
+
+def sqm_to_hectares(area_sqm: float) -> float:
+    """
+    Перевод площади из квадратных метров в гектары.
+    :param area_sqm: площадь в м²
+    :return: площадь в гектарах
+    """
+    return area_sqm / 10_000.0
+
 
 class Point(NamedTuple):
     x: float
@@ -51,6 +58,10 @@ def dist(a: Point, b: Point) -> float:
     return math.hypot(dx, dy)
 
 
+def dot(ax: float, ay: float, bx: float, by: float) -> float:
+    return ax * bx + ay * by
+
+
 def polyline_lengths(pts: list[Point]) -> list[float]:
     """Накопленная длина вдоль ломаной, s[i] — расстояние от начала до pts[i]."""
     s = [0.0]
@@ -64,8 +75,8 @@ def point_on_path(pts: list[Point], distance: float) -> Point:
     Точка на ломаной на расстоянии `distance` от начала.
     Правила:
       - distance == 0 -> первая точка
-      - 0 < distance < L -> линейная интерполяция на соответствующем сегменте
-      - distance == L -> последняя точка
+      - 0 < distance < length -> линейная интерполяция на соответствующем сегменте
+      - distance == length -> последняя точка
       - иначе -> ValueError
     Используются dist и polyline_lengths.
     """
@@ -75,15 +86,15 @@ def point_on_path(pts: list[Point], distance: float) -> Point:
         raise ValueError("Дистанция не может быть отрицательной")
     
     s = polyline_lengths(pts)
-    L = s[-1]
+    length = s[-1]
     
-    if distance > L:
-        raise ValueError(f"Дистанция {distance} больше длины траектории {L}")
+    if distance > length:
+        raise ValueError(f"Дистанция {distance} больше длины траектории {length}")
     
     if distance == 0:
         return pts[0]
     
-    if distance == L:
+    if distance == length:
         return pts[-1]
     
     # Найти индекс правой границы отрезка: s[i-1] <= distance < s[i]
@@ -126,93 +137,80 @@ def curvature_radius(p_prev: Point, p: Point, p_next: Point) -> Optional[float]:
     return r if r > 1e-6 else None
 
 
+@dataclass(frozen=True)
+class Polygon:
+    vertices: list[Point]
+    
+    def __post_init__(self):
+        if len(self.vertices) >= 2 and self.vertices[0] == self.vertices[-1]:
+            object.__setattr__(self, "vertices", self.vertices[:-1])
+    
+    @property
+    def area(self) -> float:
+        verts = self.vertices
+        n = len(verts)
+        if n < 3:
+            return 0.0
+        s = 0.0
+        for i in range(n):
+            x1, y1 = verts[i]
+            x2, y2 = verts[(i + 1) % n]
+            s += x1 * y2 - x2 * y1
+        return abs(s) * 0.5
+
+
 # Преобразование Гео координат в декартовы на пласкости
 
 
 class GeoPointToXY:
+    R = 6378137.0  # м, WGS84 (экваториальный радиус, сферическое приближение)
+    
     @classmethod
-    def geo_to_xy(cls, points: list[GeoPoint], mode: Literal['EQ', 'AEQD', 'UTM'] = 'EQ') -> list[Point]:
-        converters = {
-            'EQ': cls.make_equirect_xy_converter,
-            'AEQD': cls.make_aeqd_xy_converter,
-            'UTM': cls.make_utm_xy_converter,
-        }
+    def geo_to_xy_eq(cls, center: GeoPoint, geo_point: GeoPoint) -> Point:
+        lon0_deg, lat0_deg = center.lon, center.lat
         
-        return cls.geo_to_xy_points(points, converters[mode](points))
-    
-    @staticmethod
-    def geo_to_xy_points(points: Iterable[GeoPoint],
-                         to_xy: Callable[[float, float], tuple[float, float]]) -> list[Point]:
-        out: list[Point] = []
-        for p in points:
-            x, y = to_xy(p.lon, p.lat)
-            out.append(Point(x, y))
-        return out
-    
-    # ========== 1) Локальная equirectangular (малые области) ==========
-    # x ≈ R cos(lat0) (lon - lon0), y ≈ R (lat - lat0)
-    # Углы в радианах. Быстро и просто, приемлемо в пределах ~10–20 км от опорной точки.
-    @staticmethod
-    def make_equirect_xy_converter(points: list[GeoPoint]) -> Callable[[float, float], tuple[float, float]]:
-        if not points:
-            raise ValueError("Нужна хотя бы одна точка для опорного центра.")
-        R = 6378137.0  # м, WGS84 (экваториальный радиус, сферическое приближение)
-        lon0_deg, lat0_deg = points[0].lon, points[0].lat
         lon0, lat0 = math.radians(lon0_deg), math.radians(lat0_deg)
         
-        def to_xy(lon_deg: float, lat_deg: float) -> tuple[float, float]:
-            lon, lat = math.radians(lon_deg), math.radians(lat_deg)
-            x = R * (lon - lon0) * math.cos(lat0)
-            y = R * (lat - lat0)
-            return x, y
+        lon, lat = math.radians(geo_point.lon), math.radians(geo_point.lat)
         
-        return to_xy
+        x = cls.R * (lon - lon0) * math.cos(lat0)
+        y = cls.R * (lat - lat0)
+        
+        return Point(x=x, y=y)
     
-    # ========== 2) AEQD — азимутальная равноудалённая (локальная «метрика») ==========
-    # Лучше, чем (1) для радиальных расстояний вокруг центра. Нужен pyproj.
-    @staticmethod
-    def make_aeqd_xy_converter(points: list[GeoPoint]) -> Callable[[float, float], tuple[float, float]]:
-        if not points:
-            raise ValueError("Нужна хотя бы одна точка для центра проекции.")
-        from pyproj import CRS, Transformer  # требуются: pip install pyproj
+    @classmethod
+    def geo_to_xy_aeqd(cls, center: GeoPoint, geo_point: GeoPoint) -> Point:
+        from pyproj import CRS, Transformer
         
-        lon0, lat0 = points[0].lon, points[0].lat
-        wgs84 = CRS.from_epsg(4326)
+        lon0_deg, lat0_deg = center.lon, center.lat
+        
+        espg_to_wgs84_code = 4326
+        wgs84 = CRS.from_epsg(espg_to_wgs84_code)
         aeqd = CRS.from_proj4(
-            f"+proj=aeqd +lat_0={lat0} +lon_0={lon0} +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
-        )
+            f"+proj=aeqd +lat_0={lat0_deg} +lon_0={lon0_deg} +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs")
         tr = Transformer.from_crs(wgs84, aeqd, always_xy=True)
         
-        def to_xy(lon_deg: float, lat_deg: float) -> tuple[float, float]:
-            x, y = tr.transform(lon_deg, lat_deg)
-            return float(x), float(y)
+        x, y = tr.transform(geo_point.lon, geo_point.lat)
         
-        return to_xy
+        return Point(x=float(x), y=float(y))
     
-    # ========== 3) UTM — зональная поперечно-меркаторская ==========
-    # Подходит для работы в пределах одной UTM-зоны. Нужен pyproj.
     @staticmethod
-    def make_utm_xy_converter(points: list[GeoPoint]) -> Callable[[float, float], tuple[float, float]]:
-        if not points:
-            raise ValueError("Нужна хотя бы одна точка для определения зоны.")
+    def utm_zone_from_lon(lon: float) -> int:
+        return int((lon + 180) // 6) + 1
+    
+    @classmethod
+    def geo_to_xy_utm(cls, center: GeoPoint, geo_point: GeoPoint) -> Point:
         from pyproj import CRS, Transformer  # требуются: pip install pyproj
         
-        lon0, lat0 = points[0].lon, points[0].lat
+        lon0, lat0 = center.lon, center.lat
         
-        def utm_zone_from_lon(lon: float) -> int:
-            return int((lon + 180) // 6) + 1
-        
-        zone = utm_zone_from_lon(lon0)
+        zone = cls.utm_zone_from_lon(lon0)
         epsg = (32600 if lat0 >= 0.0 else 32700) + zone  # 326xx — север, 327xx — юг
         wgs84 = CRS.from_epsg(4326)
         utm = CRS.from_epsg(epsg)
         tr = Transformer.from_crs(wgs84, utm, always_xy=True)
-        
-        def to_xy(lon_deg: float, lat_deg: float) -> tuple[float, float]:
-            x, y = tr.transform(lon_deg, lat_deg)
-            return float(x), float(y)
-        
-        return to_xy
+        x, y = tr.transform(geo_point.lon, geo_point.lat)
+        return Point(x=float(x), y=float(y))
 
 
 # ---------------------------- Контроллер насоса ----------------------------
@@ -264,7 +262,7 @@ class PumpController:
             return 0.0
         return x
     
-    def compute_flow_series(self, t, v_motion, L: float, V_total: float, eps = 1e-9) -> PumpPlan:
+    def compute_flow_series(self, t, v_motion, L: float, V_total: float, eps=1e-9) -> PumpPlan:
         """
         :param t: дискретные моменты времени
         :param v_motion: моментальная скорость в соответствующие моменты времени
@@ -480,6 +478,13 @@ class PureLateralLimitTurnPolicy:
 
 
 # --------- Сегменты пути ---------
+import math
+import bisect
+from dataclasses import dataclass
+from typing import Protocol, Optional
+
+
+# ---------- Протокол сегмента ----------
 
 class Segment(Protocol):
     length: float
@@ -488,7 +493,13 @@ class Segment(Protocol):
     def speed_at(self, s_along: float) -> float: ...
     
     def duration(self) -> float: ...
+    
+    def distance_at_time(self, tau: float) -> float: ...
+    
+    def speed_at_time(self, tau: float) -> float: ...
 
+
+# ---------- Реализации сегментов ----------
 
 @dataclass
 class StraightSegment:
@@ -501,8 +512,8 @@ class StraightSegment:
     d_acc: float
     d_cruise: float
     d_dec: float
-    a_max: float
-    d_max: float
+    a_max: float  # ускорение (>=0)
+    d_max: float  # замедление (>=0)
     
     def speed_at(self, s_along: float) -> float:
         s = max(0.0, min(self.length, s_along))
@@ -515,12 +526,60 @@ class StraightSegment:
             v_sq = max(0.0, self.v_peak ** 2 - 2.0 * self.d_max * s_dec)
             return max(self.v_out, math.sqrt(v_sq))
     
-    def duration(self) -> float:
-        # Точное интегрирование по трем фазам
-        t_acc = (self.v_peak - self.v_in) / max(self.a_max, 1e-9) if self.v_peak > self.v_in else 0.0
-        t_dec = (self.v_peak - self.v_out) / max(self.d_max, 1e-9) if self.v_peak > self.v_out else 0.0
-        t_cruise = self.d_cruise / self.v_peak if self.v_peak > 1e-9 else 0.0
-        return t_acc + t_cruise + t_dec
+    def times(self, eps=1e-12):
+        t_acc = (self.v_peak - self.v_in) / max(self.a_max, eps) if self.v_peak > self.v_in else 0.0
+        t_dec = (self.v_peak - self.v_out) / max(self.d_max, eps) if self.v_peak > self.v_out else 0.0
+        t_cruise = self.d_cruise / self.v_peak if self.v_peak > eps else 0.0
+        return t_acc, t_dec, t_cruise
+    
+    def duration(self, eps=1e-12) -> float:
+        return sum(self.times(eps))
+    
+    def distance_at_time(self, tau: float, eps=1e-12) -> float:
+        """
+        Точная s(tau) по фазам:
+          1) разгон:   s = v_in * t + 0.5 * a * t^2
+          2) крейсер:  s = d_acc + v_peak * (t - t_acc)
+          3) тормож.:  s = d_acc + d_cruise + (v_peak * t_d - 0.5 * d * t_d^2)
+        """
+        t_acc, t_dec, t_cruise = self.times(eps)
+        
+        if tau <= 0.0:
+            return 0.0
+        total_time = t_acc + t_cruise + t_dec
+        if tau >= total_time:
+            return self.length
+        
+        if tau <= t_acc:
+            # разгон
+            return self.v_in * tau + 0.5 * self.a_max * tau * tau
+        
+        if tau <= t_acc + t_cruise:
+            # крейсер
+            return self.d_acc + self.v_peak * (tau - t_acc)
+        
+        # торможение
+        t_d = tau - (t_acc + t_cruise)
+        return self.d_acc + self.d_cruise + (self.v_peak * t_d - 0.5 * self.d_max * t_d * t_d)
+    
+    def speed_at_time(self, tau: float, eps=1e-12) -> float:
+        """Опционально: точная v(tau) по фазам."""
+        t_acc, t_dec, t_cruise = self.times(eps)
+        
+        if tau <= 0.0:
+            return self.v_in
+        total_time = t_acc + t_cruise + t_dec
+        
+        if tau >= total_time:
+            return self.v_out
+        
+        if tau <= t_acc:
+            return self.v_in + self.a_max * tau
+        
+        if tau <= t_acc + t_cruise:
+            return self.v_peak
+        t_d = tau - (t_acc + t_cruise)
+        return max(self.v_out, self.v_peak - self.d_max * t_d)
 
 
 @dataclass
@@ -536,23 +595,59 @@ class TurnSegment:
         return self.v_const
     
     def duration(self) -> float:
-        if self.length > 0.0 and self.v_const > 1e-9:
+        eps = 1e-12
+        if self.length > 0.0 and self.v_const > eps:
             return self.length / self.v_const
         # поворот на месте
-        return self.phi_deg / max(self.yaw_rate, 1e-9)
+        return self.phi_deg / max(self.yaw_rate, eps)
+    
+    def distance_at_time(self, tau: float) -> float:
+        if self.length <= 0.0 or self.v_const <= 0.0:
+            return 0.0
+        if tau <= 0.0:
+            return 0.0
+        T = self.length / self.v_const
+        if tau >= T:
+            return self.length
+        return self.v_const * tau
+    
+    def speed_at_time(self, tau: float) -> float:
+        return self.v_const
 
 
-# --------- Профиль скорости ---------
+# ---------- Профиль скорости ----------
+def _frange_inclusive(t0: float, t1: float, step: float) -> list[float]:
+    """Создать возрастающий список [t0, ..., t1] с шагом <= step, гарантируя t1 в конце."""
+    if step <= 0:
+        return [t0, t1] if t1 > t0 else [t0]
+    out = []
+    k = 0
+    cur = t0
+    while cur + 1e-12 < t1:
+        out.append(cur)
+        k += 1
+        cur = t0 + k * step
+    out.append(t1)
+    return out
+
 
 class SpeedProfile:
     def __init__(self, segments: list[Segment]) -> None:
         self._segments = segments
-        # префиксные длины для быстрого поиска по дистанции
+        
+        # Кумулятивные длины
         self._cum: list[float] = [0.0]
         s = 0.0
-        for i, seg in enumerate(segments):
+        for seg in segments:
             s += seg.length
             self._cum.append(s)
+        
+        # Кумулятивные времена
+        self._cum_time: list[float] = [0.0]
+        t = 0.0
+        for seg in segments:
+            t += seg.duration()
+            self._cum_time.append(t)
     
     @property
     def all_segments(self) -> list[Segment]:
@@ -562,87 +657,198 @@ class SpeedProfile:
     def total_distance(self) -> float:
         return self._cum[-1]
     
-    def find_segment_with_bounds(self, s_along_path):
+    @property
+    def total_duration(self) -> float:
+        return self._cum_time[-1]
+    
+    # --- Поиск по дистанции/времени ---
+    
+    def find_segment_with_bounds(self, s_along_path: float):
         s = s_along_path
         if s < 0 or s > self.total_distance:
             raise ValueError(f"segment at distance {s} out of range")
         
-        #  TODO: бинпоиск можно, но линейный тоже ок для малых списков
         for i, seg in enumerate(self._segments):
             start = self._cum[i]
             end = self._cum[i + 1]
             if s <= end or i == len(self._segments) - 1:
-                return {'seg': seg, 'start': start, 'end': end}
+                return {'seg': seg, 'start': start, 'end': end, 'i': i}
         
         raise RuntimeError(f"segment at distance {s} not found")
+    
+    def find_segment_by_time(self, t: float):
+        if t < 0 or t > self.total_duration:
+            raise ValueError(f"time {t} out of range")
+        
+        for i, seg in enumerate(self._segments):
+            t_start = self._cum_time[i]
+            t_end = self._cum_time[i + 1]
+            if t <= t_end or i == len(self._segments) - 1:
+                return {'seg': seg, 't_start': t_start, 't_end': t_end, 'i': i}
+        
+        raise RuntimeError("segment at time not found")
+    
+    # --- Запросы ---
     
     def seg_at_distance(self, s_along_path: float) -> Segment:
         return self.find_segment_with_bounds(s_along_path)['seg']
     
     def speed_at_distance(self, s_along_path: float) -> float:
-        """Скорость в точке пути на расстоянии s_along_path (м) от начала."""
         res = self.find_segment_with_bounds(s_along_path)
-        
         seg = res['seg']
         start = res['start']
-        end = res['end']
-        
         return seg.speed_at(s_along_path - start)
     
-    def speed_at_time(self, t, sim_dt=0.01):
-        # t_list — возрастающий список времён; v_list — скорости в те же моменты
-        t_list, s_list, v_list = self.simulate_time_param(dt=sim_dt)
+    def distance_at_time(self, t: float) -> float:
+        """
+        Точная пройденная дистанция к моменту времени t.
+        Без дискретизации; использует duration()/distance_at_time() сегментов.
+        """
+        if t <= 0.0:
+            return 0.0
+        if t >= self.total_duration:
+            return self.total_distance
         
-        # Границы: экстраполяции не делаем — берём крайние значения
-        if t <= t_list[0]:
-            return v_list[0]
-        if t >= t_list[-1]:
-            return v_list[-1]
+        res = self.find_segment_by_time(t)
+        seg = res['seg']
+        t_start = res['t_start']
+        i = res['i']
         
-        # Позиция вставки слева
-        i = bisect.bisect_left(t_list, t)
+        tau = t - t_start  # локальное время в сегменте
+        s_local = seg.distance_at_time(tau)
+        # защита от накопл. ошибок
+        s_local = max(0.0, min(s_local, seg.length))
+        return self._cum[i] + s_local
+    
+    def speed_at_time(self, t: float) -> float:
+        """
+        Точная скорость в момент времени t.
+        Без дискретизации; использует piecewise формулы сегментов.
+        """
+        if t <= 0.0:
+            # скорость на старте первого сегмента во времени t=0
+            first = self._segments[0]
+            return first.speed_at_time(0.0) if hasattr(first, "speed_at_time") else first.speed_at(0.0)
         
-        # Точное попадание в узел сетки
-        if t_list[i] == t:
-            return v_list[i]
+        if t >= self.total_duration:
+            last = self._segments[-1]
+            # скорость в конце последнего сегмента
+            tau_last = last.duration()
+            return last.speed_at_time(tau_last) if hasattr(last, "speed_at_time") else last.speed_at(last.length)
         
-        # Линейная интерполяция между i-1 и i
-        t0, t1 = t_list[i - 1], t_list[i]
-        v0, v1 = v_list[i - 1], v_list[i]
-        
-        dt = t1 - t0
-        if dt == 0:
-            # На случай дубликатов времени: возвращаем левое значение
-            return v0
-        
-        alpha = (t - t0) / dt
-        return v0 + (v1 - v0) * alpha
+        res = self.find_segment_by_time(t)
+        seg = res['seg']
+        t_start = res['t_start']
+        tau = t - t_start
+        return seg.speed_at_time(tau) if hasattr(seg, "speed_at_time") else seg.speed_at(seg.distance_at_time(tau))
     
     def simulate_time_param(self, dt: float = 0.05) -> tuple[list[float], list[float], list[float]]:
         """
-        Интегрируем движение вдоль s при заданном v(s), получаем t-кривую.
-        Возвращает (t_list, s_list, v_list) дискретно по времени.
-        Предполагаем мгновенную адаптацию к v(s) (квазистационарно).
+        Дискретизация (t, s(t), v(t)) по всему профилю.
+        Время сегмента берётся из seg.duration().
+        Внутри сегмента: сетка по ~dt + точные границы фаз (для StraightSegment).
+        Возвращает (t_list, s_list, v_list) одинаковой длины.
         """
-        if not self._cum:
-            return [], [], []
-        t, s_pos = 0.0, 0.0
-        t_list, s_list, v_list = [0.0], [0.0], [self.speed_at_distance(0.0)]
+        if not self._segments:
+            return [0.0], [0.0], [0.0]
         
-        L = self.total_distance
-        while s_pos < L:
-            v = max(self.speed_at_distance(s_pos), 1e-6)
+        eps = 1e-9
+        
+        # Начальные точки
+        t_list: list[float] = [0.0]
+        s_list: list[float] = [0.0]
+        # Начальная скорость из первого сегмента
+        first_seg = self._segments[0]
+        v0 = first_seg.speed_at_time(0.0) if hasattr(first_seg, "speed_at_time") else first_seg.speed_at(0.0)
+        v_list: list[float] = [v0]
+        
+        t_offset = 0.0
+        s_offset = 0.0
+        
+        for seg in self._segments:
+            T = seg.duration()
+            if T < 0:
+                raise ValueError("segment duration() < 0")
             
-            ds = v * dt
-            s_pos = min(L, s_pos + ds)
+            # Глобальные базовые точки времени для сегмента
+            t_start = t_offset
+            t_end = t_offset + T
+            global_ts = self._frange_inclusive_global(t_start, t_end, dt)
             
-            t += dt
+            # Фазовые точки для StraightSegment: t_acc, t_acc + t_cruise (в глобальном времени)
+            if isinstance(seg, StraightSegment):
+                # вычисляем времена фаз
+                t_acc, t_dec, t_cruise = seg.times(eps=1e-12)
+                # контроль согласованности
+                if abs(T - (t_acc + t_cruise + t_dec)) > 1e-9:
+                    raise ValueError("Несогласованные параметры StraightSegment: сумма фаз не равна duration()")
+                
+                phase_ts = []
+                if t_acc > 0.0:
+                    phase_ts.append(t_start + t_acc)
+                if t_cruise > 0.0:
+                    phase_ts.append(t_start + t_acc + t_cruise)
+                
+                # слить и удалить дубликаты с eps
+                global_ts = self._unique_sorted_eps(
+                    global_ts + [x for x in phase_ts if t_start + eps < x < t_end - eps],
+                    eps=eps)
             
-            t_list.append(t)
-            s_list.append(s_pos)
-            v_list.append(self.speed_at_distance(s_pos))
+            # Вычислить s,v в этих ГЛОБАЛЬНЫХ моментах времени
+            for tg in global_ts:
+                # пропуск точек-дубликатов (стык сегментов и др.)
+                if abs(tg - t_list[-1]) <= eps:
+                    continue
+                
+                tau = tg - t_offset  # локальное время внутри сегмента
+                s_local = seg.distance_at_time(tau)
+                v_local = seg.speed_at_time(tau) if hasattr(seg, "speed_at_time") else seg.speed_at(s_local)
+                
+                # защита от погрешностей
+                s_local = min(max(0.0, s_local), seg.length)
+                if abs(tg - t_end) <= eps:
+                    s_local = seg.length
+                
+                s_global = s_offset + s_local
+                
+                t_list.append(tg)
+                s_list.append(s_global)
+                v_list.append(v_local)
+            
+            # переход к следующему сегменту
+            t_offset = t_end
+            s_offset += seg.length
         
         return t_list, s_list, v_list
+    
+    @staticmethod
+    def _unique_sorted_eps(values: list[float], eps: float = 1e-9) -> list[float]:
+        """Отсортировать и удалить точки, совпадающие с точностью eps."""
+        if not values:
+            return []
+        values = sorted(values)
+        out = [values[0]]
+        for v in values[1:]:
+            if abs(v - out[-1]) > eps:
+                out.append(v)
+        return out
+    
+    @staticmethod
+    def _frange_inclusive_global(t0: float, t1: float, dt: float) -> list[float]:
+        """
+        Вернуть точки [t0, ..., t1]; шаг ~ dt.
+        Без накопления ошибок: последняя точка принудительно t1.
+        """
+        if t1 < t0:
+            return [t0]
+        if dt <= 0:
+            return [t0, t1] if t1 > t0 else [t0]
+        span = t1 - t0
+        # сколько шагов dt укладывается ДО последней точки (последняя — t1 отдельно)
+        n = int(math.floor(span / dt))
+        ts = [t0 + k * dt for k in range(n)]  # t0 .. t0+(n-1)dt
+        ts.append(t1)  # конец точно t1
+        return ts
 
 
 # --------- Предиктор/строитель ---------
@@ -788,6 +994,153 @@ class SpeedPredictor:
                 v_in_prev = v_turn
         
         return SpeedProfile(segments)
+
+
+def _is_strict_increasing(x: Sequence[float]) -> bool:
+    return all(x[i] < x[i + 1] for i in range(len(x) - 1))
+
+
+def _is_uniform(x: Sequence[float], rel_tol: float = 1e-9) -> bool:
+    if len(x) < 3:
+        return True
+    h0 = x[1] - x[0]
+    if h0 <= 0:
+        return False
+    for i in range(1, len(x) - 1):
+        hi = x[i + 1] - x[i]
+        if hi <= 0:
+            return False
+        # относительное отклонение шага
+        if abs(hi - h0) > rel_tol * max(abs(h0), abs(hi), 1.0):
+            return False
+    return True
+
+
+def integrate_samples(
+        t: Sequence[float],
+        y: Sequence[float],
+        *,
+        method: Literal["auto", "simpson", "trapezoid"] = "auto",  # "auto" | "simpson" | "trapezoid"
+        uniform_tol: float = 1e-9  # допуск равномерности шага
+) -> float:
+    r"""
+    Численный интеграл по точкам (t[i], y[i]).
+    Предполагается, что t возрастают.
+
+    method="auto": если шаг равномерен (с допуском) и число точек нечётное (число интервалов чётное) — Симпсон,
+                   иначе — трапеция.
+    method="simpson": требует равномерный шаг и нечётное число точек.
+    method="trapezoid": работает на неравномерной сетке.
+
+    Возвращает оценку интеграла \int_{t0}^{tN} y(t) dt.
+    """
+    n = len(t)
+    if n != len(y):
+        raise ValueError("t и y должны быть одинаковой длины")
+    if n < 2:
+        return 0.0
+    if not _is_strict_increasing(t):
+        raise ValueError("t должны строго возрастать")
+    
+    if method not in {"auto", "simpson", "trapezoid"}:
+        raise ValueError("method должен быть 'auto', 'simpson' или 'trapezoid'")
+    
+    # выбор метода
+    if method == "auto":
+        uniform = _is_uniform(t, rel_tol=uniform_tol)
+        if uniform and (n % 2 == 1):  # для Симпсона нужно нечётное число узлов
+            method_use = "simpson"
+        else:
+            method_use = "trapezoid"
+    else:
+        method_use = method
+    
+    if method_use == "trapezoid":
+        s = 0.0
+        for i in range(n - 1):
+            dt = t[i + 1] - t[i]
+            s += 0.5 * (y[i] + y[i + 1]) * dt
+        return s
+    
+    # Симпсон (равномерная сетка, n узлов, n-1 интервалов чётно)
+    if not _is_uniform(t, rel_tol=uniform_tol):
+        raise ValueError("Симпсон требует (почти) равномерный шаг")
+    if n % 2 == 0:
+        raise ValueError("Для Симпсона нужно нечётное число точек (чётное число интервалов)")
+    
+    h = (t[-1] - t[0]) / (n - 1)
+    s_odd = sum(y[i] for i in range(1, n - 1, 2))
+    s_even = sum(y[i] for i in range(2, n - 1, 2))
+    return (h / 3.0) * (y[0] + y[-1] + 4.0 * s_odd + 2.0 * s_even)
+
+
+def simulate_time_param(
+        wp: list[Point],
+        speed_list: list[float],
+        *,
+        min_speed: float = 1e-9
+) -> list[float]:
+    """
+    Восстанавливает времена в узлах полилинии при линейной интерполяции скорости по дистанции.
+    Возвращает t_list той же длины, что wp/speed_list; t_list[0] = 0.
+
+    Математика (на отрезке s∈[s0,s1], v(s) линейна):
+      v(s) = v0 + (v1 - v0) * (s - s0) / Δs
+      Δt = ∫_{s0}^{s1} ds / v(s) =
+           - при v0==v1:      Δs / v0
+           - при v0!=v1:      (Δs / (v1 - v0)) * ln(v1 / v0)
+
+    Параметры:
+      - min_speed: нижняя граница для скоростей (защита от деления на 0 и ln(0)).
+
+    Ограничения/проверки:
+      - длина speed_list должна совпадать с wp;
+      - дистанции по polyline_lengths(wp) неубывающие;
+      - скорости строго > 0 (принудительно зажимаются не ниже min_speed).
+    """
+    if len(wp) == 0:
+        return []
+    
+    if len(speed_list) != len(wp):
+        raise ValueError("speed_list и wp должны быть одинаковой длины")
+    
+    # Кумулятивные расстояния по полилинии (предполагается, что функция дана)
+    s_list = polyline_lengths(wp)  # длина = len(wp)
+    if any(s_list[i + 1] < s_list[i] for i in range(len(s_list) - 1)):
+        raise ValueError("polyline_lengths(wp) должна быть неубывающей")
+    
+    # Времена в узлах
+    t_list: list[float] = [0.0]
+    
+    for i in range(len(s_list) - 1):
+        s0, s1 = s_list[i], s_list[i + 1]
+        ds = s1 - s0
+        if ds < 0:
+            raise ValueError("Отрицательный приращение дистанции (полилиния некорректна)")
+        
+        v0 = max(float(speed_list[i]), min_speed)
+        v1 = max(float(speed_list[i + 1]), min_speed)
+        
+        if ds == 0.0:
+            dt_seg = 0.0
+        else:
+            dv = v1 - v0
+            # Численно устойчивый переход к пределу при |dv| << v
+            if abs(dv) <= 1e-12 * max(v0, v1):
+                dt_seg = ds / v0
+            else:
+                ratio = v1 / v0
+                if ratio <= 0.0:
+                    raise ValueError("Скорости должны быть > 0 для интегрирования времени")
+                dt_seg = (ds / dv) * math.log(ratio)
+            
+            if dt_seg < 0:
+                # При линейной v(s) и v0,v1>0 этого быть не должно
+                raise ValueError("Получено отрицательное время на отрезке — проверьте входные данные")
+        
+        t_list.append(t_list[-1] + dt_seg)
+    
+    return t_list
 
 
 # ---------------------------- main: пример использования ----------------------------
