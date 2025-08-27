@@ -157,6 +157,32 @@ class GeoPointToXY:
         return Point(x=x, y=y)
     
     @classmethod
+    def xy_to_geo_eq(cls, center: GeoPoint, point: Point) -> GeoPoint:
+        """
+        Обратное к geo_to_xy_eq: локальные координаты (x, y) -> географические (lon, lat) в градусах.
+        Предположения:
+          - Сфера радиуса cls.R
+          - Малые расстояния вокруг center (точность падает с ростом расстояния)
+        Исключения:
+          - При cos(lat0) ~ 0 (около полюсов) вычисление долгот неустойчиво.
+        """
+        lon0_deg, lat0_deg = center.lon, center.lat
+        x, y = point.x, point.y
+        
+        lon0 = math.radians(lon0_deg)
+        lat0 = math.radians(lat0_deg)
+        
+        cos_lat0 = math.cos(lat0)
+        eps = 1e-12
+        if abs(cos_lat0) < eps:
+            raise ValueError("xy_to_geo_eq: cos(lat0) ≈ 0 — неустойчиво на широтах, близких к ±90°.")
+        
+        lon = x / (cls.R * cos_lat0) + lon0
+        lat = y / cls.R + lat0
+        
+        return GeoPoint(lon=math.degrees(lon), lat=math.degrees(lat))
+    
+    @classmethod
     def geo_to_xy_aeqd(cls, center: GeoPoint, geo_point: GeoPoint) -> Point:
         from pyproj import CRS, Transformer
         
@@ -594,20 +620,6 @@ class TurnSegment:
 
 
 # ---------- Профиль скорости ----------
-def _frange_inclusive(t0: float, t1: float, step: float) -> list[float]:
-    """Создать возрастающий список [t0, ..., t1] с шагом <= step, гарантируя t1 в конце."""
-    if step <= 0:
-        return [t0, t1] if t1 > t0 else [t0]
-    out = []
-    k = 0
-    cur = t0
-    while cur + 1e-12 < t1:
-        out.append(cur)
-        k += 1
-        cur = t0 + k * step
-    out.append(t1)
-    return out
-
 
 class SpeedProfile:
     def __init__(self, segments: list[Segment]) -> None:
