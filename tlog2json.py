@@ -69,9 +69,9 @@ def tlog_to_ndjson(
         dialect=dialect,
         robust_parsing=robust_parsing,
     )
-    
+
     out_ndjson.parent.mkdir(parents=True, exist_ok=True)
-    
+
     none_in_row = 0
     with out_ndjson.open("w", encoding="utf-8") as f:
         while True:
@@ -82,13 +82,13 @@ def tlog_to_ndjson(
                     break
                 continue
             none_in_row = 0
-            
+
             # базовый dict от pymavlink
             try:
                 d = msg.to_dict()
             except AttributeError:
                 d = {k: v for k, v in msg.__dict__.items() if not k.startswith("_")}
-            
+
             # добавляем тип и timestamp (если доступен)
             d["_type"] = msg.get_type()
             ts = getattr(msg, "_timestamp", None)
@@ -96,7 +96,7 @@ def tlog_to_ndjson(
                 tb = getattr(msg, "time_boot_ms", None)
                 ts = (tb / 1000.0) if tb is not None else None
             d["_timestamp"] = ts
-            
+
             f.write(json.dumps(sanitize(d, bytes_mode), ensure_ascii=False) + "\n")
 
 
@@ -141,12 +141,12 @@ def build_output_paths(
         out_ndjson = src_file.parent / (base.name + ".ndjson")
         out_json = src_file.parent / (base.name + ".json") if produce_json else None
         return out_ndjson, out_json
-    
+
     if out_dir_or_file.suffix.lower() == ".ndjson" and src_file.is_file():
         out_ndjson = out_dir_or_file
         out_json = out_dir_or_file.with_suffix(".json") if produce_json else None
         return out_ndjson, out_json
-    
+
     # иначе считаем, что это директория
     out_dir = out_dir_or_file
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -219,34 +219,34 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Только JSON (сначала будет сгенерирован NDJSON).",
     )
-    
+
     args = p.parse_args(argv)
-    
+
     # Определяем режимы вывода
     if args.ndjson_only and args.json_only:
         p.error("Нельзя одновременно --ndjson-only и --json-only")
-    
+
     produce_ndjson = not args.json_only
     produce_json = not args.ndjson_only
-    
+
     in_path: Path = args.input
     if not in_path.exists():
         p.error(f"Входной путь не найден: {in_path}")
-    
+
     files = list(iter_tlog_files(in_path, args.pattern, args.recursive))
     if not files:
         print("Нет файлов для обработки.", file=sys.stderr)
         return 2
-    
+
     multi_input = len(files) > 1 or in_path.is_dir()
-    
+
     for f in files:
         if not f.is_file():
             continue
         out_ndjson, out_json = build_output_paths(
             f, args.out if multi_input else args.out, produce_json
         )
-        
+
         # NDJSON (как итог или как источник для JSON)
         if produce_ndjson or args.json_only:
             tlog_to_ndjson(
@@ -258,14 +258,14 @@ def main(argv: list[str] | None = None) -> int:
                 none_limit=args.none_limit,
             )
             print(f"OK: {out_ndjson}")
-        
+
         # JSON-массив при необходимости
         if produce_json:
             if out_json is None:
                 out_json = out_ndjson.with_suffix(".json")
             ndjson_to_json(out_ndjson, out_json)
             print(f"OK: {out_json}")
-    
+
     return 0
 
 
