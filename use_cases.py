@@ -86,14 +86,16 @@ class PumpFacade:
             volume_total=self.volume_total,
         )
 
+        self.density = self.volume_total / self.profile.total_distance
         self.total_dispensed_by_pump_plan = self.pump_controller.total_dispensed(self.pump_plan)
 
     def plot(self):
         list_pts = [point_on_path(self.plan.waypoints_xy, s) for s in self.s_list]
+
         plot_density_profile(list_pts,
                              self.pump_plan.q,
                              self.speed_list,
-                             self.volume_total / self.profile.total_distance)
+                             self.density)
 
     @classmethod
     def from_simple_params(cls,
@@ -135,6 +137,9 @@ class PumpFacade:
                    pumping_policy=pumping_policy
                    )
 
+class AutoCompensation:
+    def compensate(self):
+        pass
 
 def main():
     req_norma = 5
@@ -156,7 +161,7 @@ def main():
                                        pump_min_speed=pump_min_speed,
                                        pump_max_speed=pump_max_speed,
                                        tank_volume=tank_volume,
-                                       pumping_policy=PumpingPolicy.NoUnderfillPolicy)
+                                       pumping_policy=PumpingPolicy.NoOverflowPolicy)
 
     pf.plot()
 

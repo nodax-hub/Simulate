@@ -40,6 +40,7 @@ def plot_density_profile(points, v_pump, v_motion, density,
     summary = pd.Series(l).describe()
     print(summary)
     print(f"diff = {l.mean() - density}")
+    print(f"СКО = {np.mean([pow(v - density, 2) for v in l])}")
 
     xs, ys = zip(*points)
 
