@@ -1,6 +1,7 @@
 import math
 
 from Segments import Segment, StraightSegment
+from dto import Point
 
 
 class SpeedProfile:
@@ -34,7 +35,6 @@ class SpeedProfile:
         return self._cum_time[-1]
 
     # --- Поиск по дистанции/времени ---
-
     def find_segment_with_bounds(self, s_along_path: float):
         s = s_along_path
         if s < 0 or s > self.total_distance:
@@ -61,7 +61,6 @@ class SpeedProfile:
         raise RuntimeError("segment at time not found")
 
     # --- Запросы ---
-
     def seg_at_distance(self, s_along_path: float) -> Segment:
         return self.find_segment_with_bounds(s_along_path)['seg']
 
@@ -114,6 +113,18 @@ class SpeedProfile:
         tau = t - t_start
         return seg.speed_at_time(tau) if hasattr(seg, "speed_at_time") else seg.speed_at(seg.distance_at_time(tau))
 
+    # --- НОВОЕ: точка по дистанции/времени ---
+    def point_at_distance(self, s_along_path: float) -> Point:
+        res = self.find_segment_with_bounds(s_along_path)
+        seg: Segment = res['seg']
+        s_local = s_along_path - res['start']
+        return seg.point_at(s_local)
+
+    def point_at_time(self, t: float) -> Point:
+        s = self.distance_at_time(t)
+        return self.point_at_distance(s)
+
+    # --- симуляция без изменений ---
     def simulate_time_param(self, dt: float = 0.05) -> tuple[list[float], list[float], list[float]]:
         """
         Дискретизация (t, s(t), v(t)) по всему профилю.
@@ -138,13 +149,13 @@ class SpeedProfile:
         s_offset = 0.0
 
         for seg in self._segments:
-            T = seg.duration()
-            if T < 0:
+            t = seg.duration()
+            if t < 0:
                 raise ValueError("segment duration() < 0")
 
             # Глобальные базовые точки времени для сегмента
             t_start = t_offset
-            t_end = t_offset + T
+            t_end = t_offset + t
             global_ts = self._frange_inclusive_global(t_start, t_end, dt)
 
             # Фазовые точки для StraightSegment: t_acc, t_acc + t_cruise (в глобальном времени)
@@ -152,7 +163,7 @@ class SpeedProfile:
                 # вычисляем времена фаз
                 t_acc, t_dec, t_cruise = seg.times(eps=1e-12)
                 # контроль согласованности
-                if abs(T - (t_acc + t_cruise + t_dec)) > 1e-9:
+                if abs(t - (t_acc + t_cruise + t_dec)) > 1e-9:
                     raise ValueError("Несогласованные параметры StraightSegment: сумма фаз не равна duration()")
 
                 phase_ts = []

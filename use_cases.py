@@ -79,7 +79,7 @@ class PumpFacade:
         self.volume_total = self.plan.calculate_total_volume(self.norma)
 
         self.t_list, self.s_list, self.speed_list = self.profile.simulate_time_param(dt=dt)
-        self.points_list = [point_on_path(self.plan.waypoints_xy, s) for s in self.s_list]
+        self.points_list = [self.profile.point_at_distance(s) for s in self.s_list]
 
 
 
@@ -121,8 +121,8 @@ class PumpFacade:
             v_max=max_drone_speed,
             a_max=1.0,
             d_max=1.0,
-            yaw_rate=90.0,
-            turn_radius=0,
+            yaw_rate=10.0,
+            turn_radius=2,
             a_lat_max=2.0,
             angle_eps_deg=10.0,
             start_speed=0.0,

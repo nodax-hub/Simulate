@@ -113,19 +113,49 @@ def scatter_with_color(p: list[Point], points_values: list[float], label="Ско
     cbar.set_label(label)
 
 
-def scatter_with_color_and_profile(p: list[Point], points_values: list[float], cmap='viridis', scatter_size=10) -> None:
+def scatter_with_color_and_profile(
+    pnts: list[Point],
+    points_values: list[float],
+    waypoints: list[Point] | None = None,
+    cmap: str = 'viridis',
+    scatter_size: int = 10
+) -> None:
+    # проверки на длины
+    if len(pnts) != len(points_values):
+        raise ValueError(f"len(pnts) ({len(pnts)}) != len(points_values) ({len(points_values)})")
+
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=FIGSIZE)
 
-    path_x, path_y = zip(*p)
+    # безопасное извлечение координат
+    def as_xy(seq):
+        try:
+            return [p.x for p in seq], [p.y for p in seq]
+        except AttributeError:
+            # если элементы уже (x, y)
+            x, y = zip(*seq)
+            return list(x), list(y)
+
+    path_x, path_y = as_xy(pnts)
     sc = ax1.scatter(path_x, path_y, c=points_values, cmap=cmap, s=scatter_size)
 
-    ax1.plot(path_x, path_y, linestyle="--", color="gray", alpha=0.3)
+    # линия маршрута/вейпоинтов
+    if waypoints:
+        wp_x, wp_y = as_xy(waypoints)
+        ax1.plot(wp_x, wp_y, linestyle="--", color="gray", alpha=0.3, marker='o')
+    else:
+        # если вейпоинтов нет, просто пунктир по траектории без маркеров
+        ax1.plot(path_x, path_y, linestyle="--", color="gray", alpha=0.3)
+
     ax1.set_xlabel("X, м")
     ax1.set_ylabel("Y, м")
     ax1.set_title("Траектория полёта (цвет = скорость, м/с)")
     fig.colorbar(sc, ax=ax1, label="скорость, м/с")
 
-    ax2.plot(polyline_lengths(p), points_values, label="Скорость, м/с")
+    s_along = polyline_lengths(pnts)  # должен совпадать по длине с points_values
+    if len(s_along) != len(points_values):
+        raise ValueError(f"len(polyline_lengths(pnts)) ({len(s_along)}) != len(points_values) ({len(points_values)})")
+
+    ax2.plot(s_along, points_values, label="Скорость, м/с")
     ax2.set_xlabel("длина пути, м")
     ax2.set_ylabel("скорость, м/с")
     ax2.set_title("Профиль")

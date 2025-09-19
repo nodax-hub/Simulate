@@ -127,12 +127,19 @@ class SpeedPredictor:
         )
 
     def build_profile(self, waypoints: list[Point]) -> SpeedProfile:
+        """
+        Строит профиль с геометрией:
+        - если дуга с радиусом R помещается в узле → режем соседние прямые на R*tan(φ/2),
+          задаём TurnSegment(bounds=..., radius=R, cw=...);
+        - иначе поворот на месте в узле (pivot=сам waypoint), а предыдущая прямая заканчивается v=0.
+        Только SpeedPredictor.py меняется. Segments/SpeedPofile не трогаем.
+        """
         m = self.motion
         n = len(waypoints)
         if n < 2:
             return SpeedProfile([])
 
-        # прямые: длины и курсы
+        # длины и курсы прямых
         seg_len: list[float] = []
         seg_head: list[float] = []
         for i in range(n - 1):
@@ -140,73 +147,152 @@ class SpeedPredictor:
             seg_len.append(math.hypot(p2[0] - p1[0], p2[1] - p1[1]))
             seg_head.append(self._heading(p1, p2))
 
-        # допустимая скорость на узлах (концах прямых), может быть None
+        # ограничение скорости в узлах по policy
         v_node: list[Optional[float]] = [None] * (n - 1)
         for i in range(n - 2):
             phi_deg = self._angle_diff_deg(seg_head[i], seg_head[i + 1])
             phi_rad = math.radians(phi_deg)
             v_node[i] = self.policy.corner_speed(phi_rad, m)
 
+        # можно ли поставить дугу в узле i (между сегментами i и i+1)
+        def can_place_arc(i: int) -> tuple[bool, float, float]:
+            if m.turn_radius is None or m.turn_radius <= 0.0:
+                return (False, 0.0, 0.0)
+            phi_deg = self._angle_diff_deg(seg_head[i], seg_head[i + 1])
+            if phi_deg <= m.angle_eps_deg:
+                return (False, 0.0, math.radians(phi_deg))
+            R = m.turn_radius
+            phi_rad = math.radians(phi_deg)
+            L_tan = R * math.tan(0.5 * phi_rad)
+            ok = (seg_len[i] > 2.0 * L_tan + 1e-9) and (seg_len[i + 1] > 2.0 * L_tan + 1e-9)
+            return (ok, L_tan, phi_rad)
+
+        # предварительно посчитаем, где будут дуги, и их "срезы"
+        cut_start = [0.0] * (n - 1)  # сколько убрать в начале сегмента i
+        cut_end = [0.0] * (n - 1)  # сколько убрать в конце сегмента i
+        place_arc = [False] * (n - 1)
+        arc_phi_rad = [0.0] * (n - 1)
+
+        if m.turn_radius and m.turn_radius > 0.0:
+            for i in range(n - 2):
+                ok, L_tan, phi_rad = can_place_arc(i)
+                if ok:
+                    place_arc[i] = True
+                    arc_phi_rad[i] = phi_rad
+                    cut_end[i] += L_tan
+                    cut_start[i + 1] += L_tan
+
+        # подготовим укороченные границы прямых
+        straight_bounds: list[BoundPoints] = []
+        straight_eff_len: list[float] = []
+        for i in range(n - 1):
+            A = Point(*waypoints[i])
+            B = Point(*waypoints[i + 1])
+            L = seg_len[i]
+            s0 = cut_start[i]
+            s1 = cut_end[i]
+            # если вдруг две дуги «съели» сегмент — ограничим нулём (редко, но безопасно)
+            L_eff = max(0.0, L - s0 - s1)
+            A2 = self._point_on_line(A, B, s0)  # начало после среза
+            B2 = self._point_on_line(A, B, L - s1)  # конец до среза
+            straight_bounds.append(BoundPoints(A2, B2))
+            straight_eff_len.append(L_eff)
+
         segments: list[Segment] = []
         v_in_prev = max(0.0, m.start_speed)
 
+        # знак поворота (True — по часовой)
+        def is_cw(h1: float, h2: float) -> bool:
+            d = ((h2 - h1 + 180.0) % 360.0) - 180.0
+            return d < 0.0
+
         for i in range(n - 1):
-            L = seg_len[i]
+            is_last = (i == n - 2)
 
-            # целевая скорость на выходе из прямого сегмента
-            v_out_req = v_node[i]
-            if i == (n - 2):
-                # последний прямой — ещё и конечное условие
-                if v_out_req is None:
-                    v_out_req = m.end_speed
-                else:
-                    v_out_req = min(v_out_req, m.end_speed)
+            # целевая скорость на выходе с прямой i
+            v_out_req: Optional[float] = None
+            if not is_last:
+                phi_deg = self._angle_diff_deg(seg_head[i], seg_head[i + 1])
+                if phi_deg > m.angle_eps_deg:
+                    if place_arc[i]:
+                        v_turn_lim = v_node[i]
+                        v_out_req = m.v_max if v_turn_lim is None else min(v_turn_lim, m.v_max)
+                    else:
+                        v_out_req = 0.0  # будет поворот на месте → тормозим до нуля к концу прямой
 
-            # Граничные точки сегмента
-            p1 = Point(*waypoints[i])
-            p2 = Point(*waypoints[i + 1])
+            if is_last:
+                v_out_req = m.end_speed if v_out_req is None else min(v_out_req, m.end_speed)
 
-            # прямой сегмент
-            straight = self._straight_segment(L, v_in_prev, v_out_req, BoundPoints(p1, p2))
+            # строим прямую с укороченными границами
+            straight = self._straight_segment(
+                straight_eff_len[i],
+                v_in_prev,
+                v_out_req,
+                straight_bounds[i],  # ВАЖНО: передаём новые BoundPoints
+            )
             segments.append(straight)
 
-            if i >= (n - 2):
-                continue
+            if is_last:
+                break
 
-            # добавляем поворот, если не последний сегмент
+            # добавляем поворот
             phi_deg = self._angle_diff_deg(seg_head[i], seg_head[i + 1])
             if phi_deg <= m.angle_eps_deg:
-                # почти прямая: поворотного сегмента нет
                 v_in_prev = straight.v_out
                 continue
 
-            if m.turn_radius is None:
-                # поворот на месте: скорость к нулю уже обеспечена на прямом
+            if not place_arc[i]:
+                # поворот на месте — задаём pivot/bounds, чтобы point_at() не падал
+                pivot_pt = Point(*waypoints[i + 1])
                 segments.append(TurnSegment(
                     type="turn",
                     length=0.0,
                     v_const=0.0,
                     phi_deg=phi_deg,
                     radius=None,
-                    yaw_rate=m.yaw_rate
+                    yaw_rate=m.yaw_rate,
+                    pivot=pivot_pt,
+                    bounds=BoundPoints(pivot_pt, pivot_pt)  # безопасно для point_at()
                 ))
                 v_in_prev = 0.0
-            else:
-                phi_rad = math.radians(phi_deg)
-                arc_length = m.turn_radius * phi_rad
-                v_turn_lim = self.policy.corner_speed(phi_rad, m)
+                continue
 
-                # policy гарантирует не-None при phi > eps; проверим на всякий случай
-                v_turn_lim = m.v_max if v_turn_lim is None else v_turn_lim
-                v_turn = min(v_turn_lim, straight.v_out)
-                segments.append(TurnSegment(
-                    type="turn",
-                    length=arc_length,
-                    v_const=v_turn,
-                    phi_deg=phi_deg,
-                    radius=m.turn_radius,
-                    yaw_rate=m.yaw_rate
-                ))
-                v_in_prev = v_turn
+            # дуга радиуса R: границы — конец текущей укороченной прямой и начало следующей
+            R = float(m.turn_radius)  # гарантировано >0, т.к. place_arc[i] == True
+            phi_rad = arc_phi_rad[i]
+            arc_len = R * phi_rad
+            arc_start = straight_bounds[i].end
+            arc_end = straight_bounds[i + 1].start
+            cw_flag = is_cw(seg_head[i], seg_head[i + 1])
+
+            # скорость на дуге: не больше corner_speed и выходной со straight
+            v_turn_lim = v_node[i]
+            v_turn_lim = m.v_max if v_turn_lim is None else v_turn_lim
+            v_turn = min(v_turn_lim, straight.v_out)
+
+            segments.append(TurnSegment(
+                type="turn",
+                length=arc_len,
+                v_const=v_turn,
+                phi_deg=phi_deg,
+                radius=R,
+                yaw_rate=m.yaw_rate,
+                bounds=BoundPoints(arc_start, arc_end),
+                cw=cw_flag
+            ))
+            v_in_prev = v_turn
 
         return SpeedProfile(segments)
+
+    @staticmethod
+    def _unit_vec(a: Point, b: Point) -> tuple[float, float]:
+        dx, dy = b.x - a.x, b.y - a.y
+        L = math.hypot(dx, dy)
+        if L <= 1e-12:
+            return 0.0, 0.0
+        return dx / L, dy / L
+
+    @classmethod
+    def _point_on_line(cls, a: Point, b: Point, dist_from_a: float) -> Point:
+        ux, uy = cls._unit_vec(a, b)
+        return Point(a.x + ux * dist_from_a, a.y + uy * dist_from_a)

@@ -191,7 +191,7 @@ class Plan:
         return self.polygon.area
 
     @functools.cached_property
-    def total_distance(self) -> float:
+    def sum_distance_by_waypoints(self) -> float:
         """Вернёт общую длину маршрута"""
         return polyline_lengths(self.waypoints_xy)[-1]
 
@@ -254,11 +254,15 @@ class Logs:
 
         # TODO: хорошо бы более корректно определять точки входа и выхода с поля в случае когда у нас > 1 полёта
         # Находим точки начала и окончания на плане (нормально работает только на одном пролёте всего поля)
-        start = np.argmin([dist(self.plan.waypoints_xy[0], p) for p in actual_points])
-        end = np.argmin([dist(self.plan.waypoints_xy[-1], p) for p in actual_points]) + 1
+        start_pnt = self.plan.waypoints_xy[0]
+        end_point = self.plan.waypoints_xy[-1]
 
-        waypoints = actual_points[start:end]
-        speed_list = speeds[start:end]
+        start = np.argmin([dist(start_pnt, p) for p in actual_points])
+        end = np.argmin([dist(end_point, p) for p in actual_points]) + 1
+
+        # ДОБАВЛЯЕМ с нулевой скоростью первую и последнюю точку
+        waypoints = [start_pnt] +  actual_points[start:end] + [end_point]
+        speed_list = [0] + speeds[start:end] + [0]
 
         return waypoints, speed_list
 

@@ -249,3 +249,43 @@ class Polygon:
             s += x1 * y2 - x2 * y1
 
         return abs(s) * 0.5
+
+
+def _circle_center_from_bounds(p0: Point, p1: Point, R: float, cw: bool, eps: float = 1e-12) -> tuple[float, float, float, float]:
+    """
+    Центр окружности по двум точкам p0,p1, радиусу R и направлению поворота.
+    Возвращает (cx, cy, R, theta0), где theta0 — угол в точке p0 (atan2(y0-cy, x0-cx)).
+    Исключения — если невозможно построить окружность (|p1-p0| > 2R).
+    """
+    x0, y0 = p0
+    x1, y1 = p1
+    dx = x1 - x0
+    dy = y1 - y0
+    d = math.hypot(dx, dy)
+    if d <= eps:
+        raise ValueError("Арка: start и end совпадают; используйте поворот на месте или задайте center/angle явно")
+    if d > 2.0 * R + 1e-9:
+        raise ValueError("Арка: расстояние между точками больше диаметра — радиус слишком мал")
+
+    # Середина хорды
+    mx = (x0 + x1) * 0.5
+    my = (y0 + y1) * 0.5
+
+    # Единичное направление вдоль хорды
+    ux = dx / d
+    uy = dy / d
+
+    # Перпендикуляр к хорде (право/лево)
+    # Поворот -90° (вправо): (uy, -ux)
+    # Поворот +90° (влево): (-uy, ux)
+    h = math.sqrt(max(0.0, R * R - (d * 0.5) ** 2))
+    if cw:
+        nx, ny = (uy, -ux)     # центр справа от направления p0->p1
+    else:
+        nx, ny = (-uy, ux)     # центр слева
+
+    cx = mx + h * nx
+    cy = my + h * ny
+
+    theta0 = math.atan2(y0 - cy, x0 - cx)
+    return cx, cy, R, theta0
