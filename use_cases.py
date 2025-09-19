@@ -13,8 +13,11 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Self
 
-from logic import MotionConstraints, SpeedPredictor, PureLateralLimitTurnPolicy, PumpConstraints, PumpController, \
-    BoundaryAction, point_on_path
+import numpy as np
+
+from SpeedPredictor import MotionConstraints, PureLateralLimitTurnPolicy, SpeedPredictor
+from PumpController import BoundaryAction, PumpConstraints, PumpController
+from utils import point_on_path
 from parse_log import Plan
 from plots import plot_density_profile
 
@@ -76,6 +79,9 @@ class PumpFacade:
         self.volume_total = self.plan.calculate_total_volume(self.norma)
 
         self.t_list, self.s_list, self.speed_list = self.profile.simulate_time_param(dt=dt)
+        self.points_list = [point_on_path(self.plan.waypoints_xy, s) for s in self.s_list]
+
+
 
         self.pump_controller = PumpController(self.pump_constraints)
 
@@ -86,13 +92,16 @@ class PumpFacade:
             volume_total=self.volume_total,
         )
 
-        self.density = self.volume_total / self.profile.total_distance
+        # мгновенная плотность внесения л/м
+        self.instant_introduction_density = PumpController.instantaneous_densities(np.array(self.speed_list), np.array(self.pump_plan.q))
+
+        self.density = self.volume_total / self.profile.total_distance # ожидаемая средняя плотность внесения [л/м]
         self.total_dispensed_by_pump_plan = self.pump_controller.total_dispensed(self.pump_plan)
 
-    def plot(self):
-        list_pts = [point_on_path(self.plan.waypoints_xy, s) for s in self.s_list]
+        self.diff_density = self.instant_introduction_density - self.density
 
-        plot_density_profile(list_pts,
+    def plot(self):
+        plot_density_profile(self.points_list,
                              self.pump_plan.q,
                              self.speed_list,
                              self.density)

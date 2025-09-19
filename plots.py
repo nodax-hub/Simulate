@@ -1,12 +1,17 @@
+import bisect
+from dataclasses import dataclass
 from typing import Optional
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
+from matplotlib import pyplot as plt
 from matplotlib.colors import TwoSlopeNorm, Normalize, LinearSegmentedColormap
 
-from logic import Polygon, PumpController, Point, polyline_lengths, point_on_path
+from dto import Point
+from PumpController import PumpController
+from utils import polyline_lengths, point_on_path, Polygon
 
 FIGSIZE = (38, 26)
 
@@ -36,7 +41,7 @@ def plot_density_profile(points, v_pump, v_motion, density,
                          n_lower=4, n_upper=4):
     fig, ax = plt.subplots(figsize=FIGSIZE)
 
-    l, area = PumpController.instantaneous_densities(v_motion, v_pump)
+    l = PumpController.instantaneous_densities(v_motion, v_pump)
     summary = pd.Series(l).describe()
     print(summary)
     print(f"diff = {l.mean() - density}")
@@ -194,3 +199,90 @@ def plot_speeds_profile(points, s_list, v_pump, v_motion, empty_s_list):
     plot_at_ax_profile_speeds(ax2, s_list, v_pump, v_motion)
     # plot_at_ax_profile_speeds(ax4, s_list, v_pump, v_motion)
     plt.show()
+
+
+@dataclass(frozen=True)
+class PolylineSampler:
+    waypoints: list[Point]
+    s_nodes: list[float]  # накопленные длины для waypoints
+
+    @classmethod
+    def from_waypoints(cls, waypoints: list[Point]) -> "PolylineSampler":
+        return cls(waypoints=waypoints, s_nodes=polyline_lengths(waypoints))
+
+    @property
+    def total_length(self) -> float:
+        return self.s_nodes[-1]
+
+    def position_at_s(self, s: float) -> Point:
+        """
+        Интерполяция точки на ломаной по дуговой длине s.
+        s должен быть в диапазоне [0, total_length].
+        """
+        if s <= 0.0:
+            return self.waypoints[0]
+        if s >= self.total_length:
+            return self.waypoints[-1]
+
+        # индекс правого узла сегмента: s_nodes[i-1] <= s < s_nodes[i]
+        i = bisect.bisect_right(self.s_nodes, s)
+        # защитный случай (на границе)
+        i = min(max(i, 1), len(self.waypoints) - 1)
+
+        s0, s1 = self.s_nodes[i - 1], self.s_nodes[i]
+        (x0, y0), (x1, y1) = self.waypoints[i - 1], self.waypoints[i]
+        seg_len = s1 - s0
+        # На случай нулевой длины сегмента (совпадающие точки)
+        if seg_len == 0.0:
+            return Point(x0, y0)
+        t = (s - s0) / seg_len
+        return Point(x0 + t * (x1 - x0), y0 + t * (y1 - y0))
+
+    def sample_points(self, s_list: list[float]) -> list[Point]:
+        return [self.position_at_s(s) for s in s_list]
+
+    @classmethod
+    def plot_trajectory_with_samples(cls,
+                                     waypoints: list[Point],
+                                     s_list: list[float],
+                                     v_list: list[float],
+                                     s_nodes: list[float] | None = None,
+                                     figsize: tuple[int, int] = (12, 8),  # Увеличил картинку
+                                     grid_step: float = 20.0,  # Шаг сетки
+                                     ):
+        if len(s_list) != len(v_list):
+            raise ValueError("Длины списков s_list и v_list должны совпадать.")
+
+        sampler = (
+            cls(waypoints=waypoints, s_nodes=s_nodes)
+            if s_nodes is not None
+            else cls.from_waypoints(waypoints)
+        )
+
+        pts = sampler.sample_points(s_list)
+        xs, ys = zip(*waypoints)
+        xs_s, ys_s = zip(*pts) if pts else ([], [])
+
+        fig, ax = plt.subplots(figsize=figsize)
+
+        # Ломаная
+        ax.plot(xs, ys, "--", linewidth=1.5)
+
+        # Точки по s_list с раскраской по v_list
+        sc = ax.scatter(xs_s, ys_s, c=v_list, s=40)
+
+        # Colorbar меньшего размера
+        cbar = fig.colorbar(sc, ax=ax, fraction=0.1, pad=0.02)
+        cbar.set_label("Скорость, м/с")
+
+        # Сетка равномерная
+        ax.set_xticks(range(0, int(max(xs)) + 1, int(grid_step)))
+        ax.set_yticks(range(0, int(max(ys)) + 1, int(grid_step)))
+        ax.grid(True)
+
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlabel("x, м")
+        ax.set_ylabel("y, м")
+        ax.set_title("Скорость по траектории")
+        plt.tight_layout()
+        plt.show()

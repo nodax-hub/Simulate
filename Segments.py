@@ -1,0 +1,132 @@
+import math
+from dataclasses import dataclass
+from typing import Protocol, Optional
+
+from dto import BoundPoints
+
+
+class Segment(Protocol):
+    length: float
+    type: str
+
+    def speed_at(self, s_along: float) -> float: ...
+
+    def duration(self) -> float: ...
+
+    def distance_at_time(self, tau: float) -> float: ...
+
+    def speed_at_time(self, tau: float) -> float: ...
+
+
+@dataclass
+class StraightSegment:
+    type: str
+    length: float
+    bounds: BoundPoints
+    v_in: float
+    v_peak: float
+    v_out: float
+    d_acc: float
+    d_cruise: float
+    d_dec: float
+    a_max: float  # ускорение (>=0)
+    d_max: float  # замедление (>=0)
+
+    def speed_at(self, s_along: float) -> float:
+        s = max(0.0, min(self.length, s_along))
+        if s <= self.d_acc:
+            return math.sqrt(max(0.0, self.v_in ** 2 + 2.0 * self.a_max * s))
+        elif s <= self.d_acc + self.d_cruise:
+            return self.v_peak
+        else:
+            s_dec = s - (self.d_acc + self.d_cruise)
+            v_sq = max(0.0, self.v_peak ** 2 - 2.0 * self.d_max * s_dec)
+            return max(self.v_out, math.sqrt(v_sq))
+
+    def times(self, eps=1e-12):
+        t_acc = (self.v_peak - self.v_in) / max(self.a_max, eps) if self.v_peak > self.v_in else 0.0
+        t_dec = (self.v_peak - self.v_out) / max(self.d_max, eps) if self.v_peak > self.v_out else 0.0
+        t_cruise = self.d_cruise / self.v_peak if self.v_peak > eps else 0.0
+        return t_acc, t_dec, t_cruise
+
+    def duration(self, eps=1e-12) -> float:
+        return sum(self.times(eps))
+
+    def distance_at_time(self, tau: float, eps=1e-12) -> float:
+        """
+        Точная s(tau) по фазам:
+          1) разгон:   s = v_in * t + 0.5 * a * t^2
+          2) крейсер:  s = d_acc + v_peak * (t - t_acc)
+          3) тормож.:  s = d_acc + d_cruise + (v_peak * t_d - 0.5 * d * t_d^2)
+        """
+        t_acc, t_dec, t_cruise = self.times(eps)
+
+        if tau <= 0.0:
+            return 0.0
+        total_time = t_acc + t_cruise + t_dec
+        if tau >= total_time:
+            return self.length
+
+        if tau <= t_acc:
+            # разгон
+            return self.v_in * tau + 0.5 * self.a_max * tau * tau
+
+        if tau <= t_acc + t_cruise:
+            # крейсер
+            return self.d_acc + self.v_peak * (tau - t_acc)
+
+        # торможение
+        t_d = tau - (t_acc + t_cruise)
+        return self.d_acc + self.d_cruise + (self.v_peak * t_d - 0.5 * self.d_max * t_d * t_d)
+
+    def speed_at_time(self, tau: float, eps=1e-12) -> float:
+        """Опционально: точная v(tau) по фазам."""
+        t_acc, t_dec, t_cruise = self.times(eps)
+
+        if tau <= 0.0:
+            return self.v_in
+        total_time = t_acc + t_cruise + t_dec
+
+        if tau >= total_time:
+            return self.v_out
+
+        if tau <= t_acc:
+            return self.v_in + self.a_max * tau
+
+        if tau <= t_acc + t_cruise:
+            return self.v_peak
+        t_d = tau - (t_acc + t_cruise)
+        return max(self.v_out, self.v_peak - self.d_max * t_d)
+
+
+@dataclass
+class TurnSegment:
+    type: str
+    length: float  # длина дуги, м; 0 для поворота на месте
+    v_const: float  # постоянная скорость на дуге; 0 при повороте на месте
+    phi_deg: float
+    radius: Optional[float]
+    yaw_rate: float  # для поворота на месте
+
+    def speed_at(self, s_along: float) -> float:
+        return self.v_const
+
+    def duration(self) -> float:
+        eps = 1e-12
+        if self.length > 0.0 and self.v_const > eps:
+            return self.length / self.v_const
+        # поворот на месте
+        return self.phi_deg / max(self.yaw_rate, eps)
+
+    def distance_at_time(self, tau: float) -> float:
+        if self.length <= 0.0 or self.v_const <= 0.0:
+            return 0.0
+        if tau <= 0.0:
+            return 0.0
+        T = self.length / self.v_const
+        if tau >= T:
+            return self.length
+        return self.v_const * tau
+
+    def speed_at_time(self, tau: float) -> float:
+        return self.v_const

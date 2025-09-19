@@ -6,7 +6,9 @@ from typing import Optional, Self
 
 import numpy as np
 
-from logic import GeoPoint, Point, dist, GeoTransformer, Polygon, sqm_to_hectares, polyline_lengths
+from dto import Point, GeoPoint
+from GeoTransformer import GeoTransformer
+from utils import sqm_to_hectares, dist, polyline_lengths, Polygon
 
 
 def parse_key_points_from_qgc_plan(plan: dict,
