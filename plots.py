@@ -2,15 +2,13 @@ import bisect
 from dataclasses import dataclass
 from typing import Optional
 
-import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
-import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib.colors import TwoSlopeNorm, Normalize, LinearSegmentedColormap
 
-from dto import Point
 from PumpController import PumpController
+from dto import Point
 from utils import polyline_lengths, point_on_path, Polygon
 
 FIGSIZE = (38, 26)
@@ -38,16 +36,17 @@ def plot_polygon(polygon: Polygon):
 
 
 def plot_density_profile(points, v_pump, v_motion, density,
-                         n_lower=4, n_upper=4):
+                         n_lower=4, n_upper=4, skip_start=0.001, skip_end=0.001):
+    total_pts = len(points)
+    start = round(skip_start * total_pts) if skip_start else 0
+    stop = -round(skip_end * total_pts) if skip_end > 0 else None
+
+    bounds = slice(start, stop)
+
     fig, ax = plt.subplots(figsize=FIGSIZE)
+    l = PumpController.instantaneous_densities(v_motion, v_pump)[bounds]
 
-    l = PumpController.instantaneous_densities(v_motion, v_pump)
-    summary = pd.Series(l).describe()
-    print(summary)
-    print(f"diff = {l.mean() - density}")
-    print(f"СКО = {np.mean([pow(v - density, 2) for v in l])}")
-
-    xs, ys = zip(*points)
+    xs, ys = zip(*points[bounds])
 
     # гарантируем, что density попадает в диапазон
     vmin = min(l.min(), density)
@@ -114,11 +113,11 @@ def scatter_with_color(p: list[Point], points_values: list[float], label="Ско
 
 
 def scatter_with_color_and_profile(
-    pnts: list[Point],
-    points_values: list[float],
-    waypoints: list[Point] | None = None,
-    cmap: str = 'viridis',
-    scatter_size: int = 10
+        pnts: list[Point],
+        points_values: list[float],
+        waypoints: list[Point] | None = None,
+        cmap: str = 'viridis',
+        scatter_size: int = 10
 ) -> None:
     # проверки на длины
     if len(pnts) != len(points_values):

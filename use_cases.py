@@ -15,9 +15,8 @@ from typing import Self
 
 import numpy as np
 
-from SpeedPredictor import MotionConstraints, PureLateralLimitTurnPolicy, SpeedPredictor
 from PumpController import BoundaryAction, PumpConstraints, PumpController
-from utils import point_on_path
+from SpeedPredictor import MotionConstraints, PureLateralLimitTurnPolicy, SpeedPredictor
 from parse_log import Plan
 from plots import plot_density_profile
 
@@ -35,6 +34,7 @@ class PumpFacade:
                  pump_constraints: PumpConstraints,
                  norma: float,
                  pumping_policy: PumpingPolicy,
+                 dt=0.1,
                  ):
 
         self.plan = plan
@@ -44,10 +44,10 @@ class PumpFacade:
         self.motion_constraints = motion_constraints
 
         self.predictor = SpeedPredictor(self.motion_constraints, PureLateralLimitTurnPolicy())
-
+        self.dt = dt
         self._calculate_excepted_and_fact_volume()
 
-        print(f"{self.volume_total=}, {self.total_dispensed_by_pump_plan=}")
+        # print(f"{self.volume_total=}, {self.total_dispensed_by_pump_plan=}")
 
         """        
         1. Запрещается переливать (допускается недолив):
@@ -59,26 +59,26 @@ class PumpFacade:
         """
 
         # если первый случай
-        if self.pumping_policy is PumpingPolicy.NoOverflowPolicy:
+        # if self.pumping_policy is PumpingPolicy.NoOverflowPolicy:
+        #
+        #     # Если переливаем
+        #     if self.total_dispensed_by_pump_plan > self.volume_total:
+        #         print("Мы перелили")
+        #
+        # # если второй случай
+        # if self.pumping_policy is PumpingPolicy.NoUnderfillPolicy:
+        #
+        #     # Если мы недоливаем
+        #     if self.total_dispensed_by_pump_plan < self.volume_total:
+        #         print("Попробуйте уменьшить максимальную скорость дрона")
 
-            # Если переливаем
-            if self.total_dispensed_by_pump_plan > self.volume_total:
-                print("Мы перелили")
-
-        # если второй случай
-        if self.pumping_policy is PumpingPolicy.NoUnderfillPolicy:
-
-            # Если мы недоливаем
-            if self.total_dispensed_by_pump_plan < self.volume_total:
-                print("Попробуйте уменьшить максимальную скорость дрона")
-
-    def _calculate_excepted_and_fact_volume(self, dt=0.1):
+    def _calculate_excepted_and_fact_volume(self):
 
         self.profile = self.predictor.build_profile(self.plan.waypoints_xy)
 
         self.volume_total = self.plan.calculate_total_volume(self.norma)
 
-        self.t_list, self.s_list, self.speed_list = self.profile.simulate_time_param(dt=dt)
+        self.t_list, self.s_list, self.speed_list = self.profile.simulate_time_param(dt=self.dt)
         self.points_list = [self.profile.point_at_distance(s) for s in self.s_list]
 
 
@@ -99,6 +99,34 @@ class PumpFacade:
         self.total_dispensed_by_pump_plan = self.pump_controller.total_dispensed(self.pump_plan)
 
         self.diff_density = self.instant_introduction_density - self.density
+        self.mse_density =  (self.diff_density ** 2).mean()
+
+    @staticmethod
+    def evaluate_distribution(v_motion, v_pump, volume_total, target_density, eps=1e-9):
+        v_motion = np.asarray(v_motion, float)
+        v_pump = np.asarray(v_pump, float)
+
+        moving = np.abs(v_motion) > eps
+        stopped = ~moving
+
+        # мгновенная плотность (только на движении)
+        instant_density = np.zeros_like(v_motion)
+        instant_density[moving] = v_pump[moving] / v_motion[moving]
+
+        # равномерность по пути
+        mse_density = ((instant_density[moving] - target_density) ** 2).mean()
+        mae_density = np.abs(instant_density[moving] - target_density).mean()
+
+        # перелив на остановках
+        stop_overflow_volume = np.sum(v_pump[stopped]) * self.dt
+        stop_overflow_ratio = stop_overflow_volume / volume_total
+
+        return {
+            "mse_density": mse_density,
+            "mae_density": mae_density,
+            "stop_overflow_volume": stop_overflow_volume,
+            "stop_overflow_ratio": stop_overflow_ratio,
+        }
 
     def plot(self):
         plot_density_profile(self.points_list,
@@ -145,10 +173,6 @@ class PumpFacade:
                    norma=norma,
                    pumping_policy=pumping_policy
                    )
-
-class AutoCompensation:
-    def compensate(self):
-        pass
 
 def main():
     req_norma = 5
