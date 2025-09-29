@@ -34,9 +34,42 @@ def plot_polygon(polygon: Polygon):
     plt.axis("equal")
     plt.show()
 
+def plot_min_range(func, left_bound, right_bound, start_x, stop_x, x_min=None, eps=None, points=500):
+    x_vals = np.linspace(start_x, stop_x, points)
 
-def plot_density_profile(points, v_pump, v_motion, density,
-                         n_lower=4, n_upper=4, skip_start=0.001, skip_end=0.001):
+    y_vals = [func(x) for x in x_vals]
+
+    plt.plot(x_vals, y_vals, label="Ошибка f(x)")
+
+
+    if left_bound is not None:
+        plt.axvline(left_bound, color="green", linestyle="--", label=f"Левая граница {left_bound}")
+
+    if right_bound is not None:
+        plt.axvline(right_bound, color="blue", linestyle="--", label=f"Правая граница {right_bound}")
+
+    title = "Диапазон минимума ошибки"
+
+    if x_min is not None:
+        y_min = func(x_min)
+        plt.plot(x_min, y_min, "ro", label=f"Минимум ({x_min}, {y_min})")
+
+        if eps is not None:
+            title += f", {eps=}."
+            threshold = y_min + eps
+            plt.axhline(threshold, color="gray", linestyle="--", label=f"Порог {threshold}")
+
+    plt.xlabel("x")
+    plt.ylabel("Ошибка")
+    plt.legend()
+    plt.title(title)
+    plt.grid(True)
+    plt.show()
+
+
+
+def plot_density_profile(points, v_pump, v_motion, density: float,
+                         n_lower=4, n_upper=4, skip_start=0.001, skip_end=0.001, v_min=None, v_max=None):
     total_pts = len(points)
     start = round(skip_start * total_pts) if skip_start else 0
     stop = -round(skip_end * total_pts) if skip_end > 0 else None
@@ -48,9 +81,8 @@ def plot_density_profile(points, v_pump, v_motion, density,
 
     xs, ys = zip(*points[bounds])
 
-    # гарантируем, что density попадает в диапазон
-    vmin = min(l.min(), density)
-    vmax = max(l.max(), density)
+    vmin = min(l.min(), density) if v_min is None else v_min
+    vmax = max(l.max(), density) if v_max is None else v_max
 
     # нормировка
     if np.isclose(density, vmin):
@@ -73,11 +105,19 @@ def plot_density_profile(points, v_pump, v_motion, density,
     # два диапазона тиков для colorbar
     lower = np.linspace(vmin, density, n_lower + 1, endpoint=True)[:-1]
     upper = np.linspace(density, vmax, n_upper + 1, endpoint=True)
-    ticks = np.concatenate([lower, upper])
-    ticks = np.unique(np.round(ticks, 12))
 
-    cbar.ax.yaxis.set_major_locator(mticker.FixedLocator(ticks))
-    cbar.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.4g'))
+
+    # жёстко добавляем границы
+    ticks = np.concatenate([[vmin], lower, upper, [vmax]])
+    ticks = np.round(ticks, 12)
+    ticks = np.unique(ticks)
+
+    # тут главное отличие: использовать set_ticks напрямую чтобы были граничные значения
+    cbar.set_ticks(ticks)
+    cbar.set_ticklabels([f"{t:.4g}" for t in ticks])
+
+    # cbar.ax.yaxis.set_major_locator(mticker.FixedLocator(ticks))
+    # cbar.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.4g'))
 
     # аннотация уровня density
     y = norm(density)

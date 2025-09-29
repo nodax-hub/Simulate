@@ -17,6 +17,7 @@ import numpy as np
 
 from PumpController import BoundaryAction, PumpConstraints, PumpController
 from SpeedPredictor import MotionConstraints, PureLateralLimitTurnPolicy, SpeedPredictor
+from dto import SimulationResult
 from parse_log import Plan
 from plots import plot_density_profile
 
@@ -99,10 +100,10 @@ class PumpFacade:
         self.total_dispensed_by_pump_plan = self.pump_controller.total_dispensed(self.pump_plan)
 
         self.diff_density = self.instant_introduction_density - self.density
-        self.mse_density =  (self.diff_density ** 2).mean()
+        self.mse_density =  float((self.diff_density ** 2).mean())
 
-    @staticmethod
-    def evaluate_distribution(v_motion, v_pump, volume_total, target_density, eps=1e-9):
+
+    def evaluate_distribution(self, v_motion, v_pump, volume_total, target_density, eps=1e-9):
         v_motion = np.asarray(v_motion, float)
         v_pump = np.asarray(v_pump, float)
 
@@ -127,6 +128,23 @@ class PumpFacade:
             "stop_overflow_volume": stop_overflow_volume,
             "stop_overflow_ratio": stop_overflow_ratio,
         }
+
+    def build_result(self) -> SimulationResult:
+        """
+        Собирает срез данных симуляции для стратегий ошибки.
+        """
+        instant_density = self.instant_introduction_density  # np.ndarray [л/м]
+        return SimulationResult(
+            volume_total=float(self.volume_total),
+            total_dispensed=float(self.total_dispensed_by_pump_plan),
+            dt=float(self.dt),
+            s_list=list(self.s_list),
+            t_list=list(self.t_list),
+            speed_list=list(map(float, self.speed_list)),
+            q_list=list(map(float, self.pump_plan.q)),
+            target_density=float(self.density),
+            instant_density=np.asarray(instant_density, float),
+        )
 
     def plot(self):
         plot_density_profile(self.points_list,
