@@ -50,14 +50,19 @@ def plot_min_range(func, left_bound, right_bound, start_x, stop_x, x_min=None, e
 
     title = "Диапазон минимума ошибки"
 
-    if x_min is not None:
+    if x_min is None:
+        argmin = np.argmin(y_vals)
+        x_min = x_vals[argmin]
+        y_min = y_vals[argmin]
+    else:
         y_min = func(x_min)
-        plt.plot(x_min, y_min, "ro", label=f"Минимум ({x_min}, {y_min})")
 
-        if eps is not None:
-            title += f", {eps=}."
-            threshold = y_min + eps
-            plt.axhline(threshold, color="gray", linestyle="--", label=f"Порог {threshold}")
+    plt.plot(x_min, y_min, "ro", label=f"Минимум ({x_min}, {y_min})")
+
+    if eps is not None:
+        title += f", {eps=}."
+        threshold = y_min + eps
+        plt.axhline(threshold, color="gray", linestyle="--", label=f"Порог {threshold}")
 
     plt.xlabel("x")
     plt.ylabel("Ошибка")

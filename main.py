@@ -3,21 +3,21 @@ from pathlib import Path
 import numpy as np
 
 from ErrorStrategy import VolumeAbsError, DensityMSE, CompositeError
-from norma_search import NormaSearcher
+import searchers
 from parse_log import Plan
 from plots import plot_min_range
 from use_cases import PumpingPolicy, PumpFacade
 
 
 def main():
-    # входные данные
     req_norma_guess_low = 0.5
     req_norma_guess_high = 300.0
+    req_norma = 20
 
     drone_v_min = 2.0
     drone_v_max = 10.0
 
-    pump_min_speed = 2  # л/мин
+    pump_min_speed = 1  # л/мин
     pump_max_speed = 13  # л/мин
     tank_volume = 40  # л
 
@@ -43,11 +43,25 @@ def main():
 
     policy = PumpingPolicy.NoUnderfillPolicy
 
-    searcher = NormaSearcher()
+    searcher = searchers.ParamSearcher()
 
-    err_func = searcher.make_error_func(
+    # start_x = req_norma_guess_low
+    # stop_x = req_norma_guess_high
+    # err_func = searchers.make_error_func_by_norma(
+    #     plan=plan,
+    #     max_drone_speed=drone_v_max,
+    #     pump_min_speed=pump_min_speed,
+    #     pump_max_speed=pump_max_speed,
+    #     tank_volume=tank_volume,
+    #     pumping_policy=policy,  # пример
+    #     strategy=strategy,
+    # )
+
+    start_x = drone_v_min
+    stop_x = drone_v_max
+    err_func = searchers.make_error_func_by_max_drone_speed(
         plan=plan,
-        max_drone_speed=drone_v_max,
+        norma=req_norma,
         pump_min_speed=pump_min_speed,
         pump_max_speed=pump_max_speed,
         tank_volume=tank_volume,
@@ -55,27 +69,30 @@ def main():
         strategy=strategy,
     )
 
-    (left_bound, right_bound), (x_minimum_err, min_error), calls = searcher.find_interval(
-        error_func=err_func,
-        start_x=req_norma_guess_low,
-        stop_x=req_norma_guess_high,
-        eps=permissible_error
-    )
-    print("Вызовов:", calls)
+    # (left_bound, right_bound), (x_minimum_err, min_error), calls = searcher.find_interval(
+    #     error_func=err_func,
+    #     start_x=start_x,
+    #     stop_x=stop_x,
+    #     eps=permissible_error
+    # )
+    # print("Вызовов:", calls)
 
     # финальная симуляция на оптимуме
-    pf = PumpFacade.from_simple_params(
-        plan=plan,
-        norma=x_minimum_err,
-        max_drone_speed=drone_v_max,
-        pump_min_speed=pump_min_speed,
-        pump_max_speed=pump_max_speed,
-        tank_volume=tank_volume,
-        pumping_policy=policy,
-    )
-
-    pf.plot()
-    plot_min_range(err_func, left_bound, right_bound, req_norma_guess_low, req_norma_guess_high, x_minimum_err, permissible_error, points=round(2 * calls))
+    # pf = PumpFacade.from_simple_params(
+    #     plan=plan,
+    #     norma=req_norma,
+    #     max_drone_speed=drone_v_max,
+    #     pump_min_speed=pump_min_speed,
+    #     pump_max_speed=pump_max_speed,
+    #     tank_volume=tank_volume,
+    #     pumping_policy=policy,
+    # )
+    #
+    # pf.plot()
+    # points = round(2 * calls)
+    points = 300
+    # plot_min_range(err_func, left_bound, right_bound, start_x, stop_x, points=points)
+    plot_min_range(err_func, None, None, start_x, stop_x, points=points)
 
     # print(pf.volume_total, pf.total_dispensed_by_pump_plan)
 
