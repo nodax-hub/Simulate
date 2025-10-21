@@ -1,6 +1,6 @@
 import csv
 import functools
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Self
 
@@ -149,11 +149,11 @@ def parse_points_csv(
 
 
 @dataclass(frozen=True)
-class Plan:
+class Plan: # PlanCoordinatesByField
     center_geo: GeoPoint
     waypoints_geo: tuple[GeoPoint, ...]
     polygon_points: tuple[GeoPoint, ...]
-    raw_data: dict
+    raw_data: dict = field(compare=False, hash=False)
 
     geo_transformer = GeoTransformer()
 
